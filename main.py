@@ -74,6 +74,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 @app.get("/find-nearby")
 async def find_nearby(user_lat: float, user_lng: float):
+    # Uses the user's actual GPS again
     raw_resources = fetch_real_resources(user_lat, user_lng)
     nearby = []
     for res in raw_resources:
