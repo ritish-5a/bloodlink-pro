@@ -13,58 +13,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def fetch_real_resources(lat, lng):
-    # Use HTTPS to prevent blocks
-    overpass_url = "https://overpass-api.de/api/interpreter"
-    overpass_query = f"""
-    [out:json][timeout:25];
+def clean_phone_number(phone_str):
+    """Converts messy map text into a clickable phone number."""
+    if not phone_str:
+        return "108"
+    # Keep only digits and the '+' sign
+    clean = "".join([c for c in str(phone_str) if c.isdigit() or c == '+'])
+    return clean if len(clean) >= 5 else "108"
+
+def fetch_real_data(lat, lng):
+    # Using the most reliable Global Overpass Mirror
+    overpass_url = "https://overpass.kumi.systems/api/interpreter"
+    query = f"""
+    [out:json][timeout:20];
     (
-      node["amenity"~"hospital|pharmacy|blood_bank"](around:15000,{lat},{lng});
-      way["amenity"~"hospital|pharmacy|blood_bank"](around:15000,{lat},{lng});
+      node["amenity"~"hospital|pharmacy|blood_bank"](around:10000,{lat},{lng});
+      way["amenity"~"hospital|pharmacy|blood_bank"](around:10000,{lat},{lng});
     );
     out center;
     """
     try:
-        response = requests.get(overpass_url, params={'data': overpass_query}, timeout=20)
-        data = response.json()
+        response = requests.get(overpass_url, params={'data': query}, timeout=15)
+        elements = response.json().get('elements', [])
         
-        real_resources = []
-        # --- ALWAYS ADD ONE TEST DONOR SO IT IS NEVER BLANK ---
-        real_resources.append({
-            "id": "test_1",
-            "name": "Rahul (Donor O+)",
-            "type": "Blood Donor",
-            "lat": lat + 0.001,
-            "lng": lng + 0.001,
-            "contact": "9888877777"
-        })
-
-        for item in data.get('elements', []):
+        results = []
+        for item in elements:
             tags = item.get('tags', {})
-            name = tags.get('name', 'Medical Center')
-            phone = tags.get('phone') or tags.get('contact:phone') or "108"
-            clean_phone = "".join(filter(str.isdigit, str(phone)))
+            # Get real name or use generic
+            name = tags.get('name') or tags.get('operator') or "Medical Center"
             
-            res_lat = item.get('lat') or item.get('center', {}).get('lat')
-            res_lng = item.get('lon') or item.get('center', {}).get('lng')
+            # Get real phone number from tags
+            raw_phone = tags.get('phone') or tags.get('contact:phone') or tags.get('mobile')
+            phone = clean_phone_number(raw_phone)
             
-            if res_lat and res_lng:
-                real_resources.append({
+            # Get coordinates
+            r_lat = item.get('lat') or item.get('center', {}).get('lat')
+            r_lng = item.get('lon') or item.get('center', {}).get('lng')
+            
+            if r_lat and r_lng:
+                results.append({
                     "id": item.get('id'),
                     "name": name,
                     "type": tags.get('amenity', 'Medical').replace('_', ' ').title(),
-                    "lat": res_lat,
-                    "lng": res_lng,
-                    "contact": clean_phone if len(clean_phone) >= 10 else "108"
+                    "lat": r_lat,
+                    "lng": r_lng,
+                    "contact": phone
                 })
-        return real_resources
-    except Exception as e:
-        print(f"Error fetching data: {e}")
-        # BACKUP DATA: If the map API fails, show these
-        return [
-            {"id": "emergency", "name": "Emergency Services", "type": "Ambulance", "lat": lat, "lng": lng, "contact": "108"},
-            {"id": "test_1", "name": "Rahul (Donor O+)", "type": "Blood Donor", "lat": lat + 0.005, "lng": lng + 0.005, "contact": "9888877777"}
-        ]
+        return results
+    except Exception:
+        return []
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     R = 6371
@@ -74,14 +71,20 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
 @app.get("/find-nearby")
 async def find_nearby(user_lat: float, user_lng: float):
-    # Uses the user's actual GPS again
-    raw_resources = fetch_real_resources(user_lat, user_lng)
+    raw_data = fetch_real_data(user_lat, user_lng)
+    
+    # If API is down, provide the basic emergency contact
+    if not raw_data:
+        return [{"id": 0, "name": "Local Emergency Line", "type": "Ambulance", "lat": user_lat, "lng": user_lng, "distance": 0, "contact": "108"}]
+
     nearby = []
-    for res in raw_resources:
+    for res in raw_data:
         dist = calculate_distance(user_lat, user_lng, res["lat"], res["lng"])
         res["distance"] = round(dist, 2)
         nearby.append(res)
-    return sorted(nearby, key=lambda x: x["distance"])[:20]
+    
+    # Sort by distance and return top 25
+    return sorted(nearby, key=lambda x: x["distance"])[:25]
 
 if __name__ == "__main__":
     import uvicorn
